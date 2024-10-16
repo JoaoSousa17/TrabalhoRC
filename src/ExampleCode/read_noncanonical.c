@@ -21,6 +21,23 @@
 
 #define BUF_SIZE 256
 
+
+
+
+//TODO - verificar se estes valores estão certos
+
+#define FLAG 0x7E // Synchronisation: start or end of frame
+
+#define A_TRANSMITTER 0x03 // Address field in frames that are commands sent by the Transmitter or replies sent by the Receiver
+#define A_RECEIVER 0X01 // Address field in frames that are commands sent by the Receiver or replies sent by the Transmitter
+
+#define SET 0x03 // SET frame: sent by the transmitter to initiate a connection
+#define UA 0x07 // UA frame: confirmation to the reception of a valid supervision frame
+
+
+
+
+
 volatile int STOP = FALSE;
 
 int main(int argc, char *argv[])
@@ -66,7 +83,7 @@ int main(int argc, char *argv[])
 
     // Set input mode (non-canonical, no echo,...)
     newtio.c_lflag = 0;
-    newtio.c_cc[VTIME] = 0; // Inter-character timer unused
+    newtio.c_cc[VTIME] = 1; // Inter-character timer unused
     newtio.c_cc[VMIN] = 5;  // Blocking read until 5 chars received
 
     // VTIME e VMIN should be changed in order to protect with a
@@ -88,6 +105,39 @@ int main(int argc, char *argv[])
 
     printf("New termios structure set\n");
 
+
+
+    //Creating BCC1
+    unsigned char BCC1_transmitter = A_TRANSMITTER ^ SET;
+    unsigned char BCC1_receiver = A_RECEIVER ^ UA ;
+
+
+
+
+    unsigned char buffer[BUF_SIZE];
+    while (1) {
+        int bytesRead = read(fd, buffer, sizeof(buffer));
+
+        // Check if enough bytes are read
+        for (int i = 0; i < bytesRead; i++) {
+            printf("Received: 0x%02X\n", buffer[i]);
+
+            // Check for the Set frame
+            if (buffer[i] == FLAG) {
+                if (i + 4 < bytesRead && buffer[i+1] == A_TRANSMITTER && buffer[i+2] == SET && buffer[i+3] == BCC1_transmitter) {
+                    // Create UA frame
+                    unsigned char uaFrame[] = {FLAG, A_RECEIVER, UA, BCC1_receiver, FLAG}; // BCC1 = 0x06
+                    write(fd, uaFrame, sizeof(uaFrame));
+                    printf("UA frame sent\n");
+                }
+            }
+        }
+    }
+
+
+
+/*
+
     // Loop for input
     unsigned char buf[BUF_SIZE + 1] = {0}; // +1: Save space for the final '\0' char
 
@@ -104,6 +154,11 @@ int main(int argc, char *argv[])
 
     // The while() cycle should be changed in order to respect the specifications
     // of the protocol indicated in the Lab guide
+
+
+
+
+    */
 
     // Restore the old port settings
     if (tcsetattr(fd, TCSANOW, &oldtio) == -1)

@@ -81,8 +81,8 @@ int main(int argc, char *argv[])
 
     // Set input mode (non-canonical, no echo,...)
     newtio.c_lflag = 0;
-    newtio.c_cc[VTIME] = 0; // Inter-character timer unused
-    newtio.c_cc[VMIN] = 0;  // Blocking read until 5 chars received
+    newtio.c_cc[VTIME] = 1; // Inter-character timer unused
+    newtio.c_cc[VMIN] = 5;  // Blocking read until 5 chars received
 
     // VTIME e VMIN should be changed in order to protect with a
     // timeout the reception of the following character(s)
@@ -103,6 +103,25 @@ int main(int argc, char *argv[])
 
     printf("New termios structure set\n");
 
+
+    //Creating BCC1
+    unsigned char BCC1_transmitter = A_TRANSMITTER ^ SET;
+    unsigned char BCC1_receiver = A_RECEIVER ^ UA ;
+
+
+
+    //Creating set frame
+    unsigned char setFrame[] = {FLAG, A_TRANSMITTER, SET, BCC1_transmitter, FLAG};
+
+
+    //Sending SET frame
+    int bytesWritten = write(fd, setFrame, sizeof(setFrame));
+    printf("%d bytes written\n", bytesWritten);
+
+
+
+/*
+
     // Create string to send
     unsigned char buf[BUF_SIZE] = {0};
 
@@ -119,8 +138,30 @@ int main(int argc, char *argv[])
     int bytes = write(fd, buf, BUF_SIZE);
     printf("%d bytes written\n", bytes);
 
+*/
+
     // Wait until all bytes have been written to the serial port
     sleep(1);
+
+
+    
+    
+    // Reading and validating the UA frame response
+    unsigned char response[5];
+    int bytesRead = read(fd, response, 5);
+    
+    if (bytesRead == 5) {
+        if (response[0] == FLAG && response[4] == FLAG && response[1] == A_RECEIVER &&
+            response[2] == UA && response[3] == (BCC1_receiver)) {
+            printf("Received correct UA frame!\n");
+        } else {
+            printf("Incorrect frame received\n");
+        }
+    } else {
+        printf("Error: UA frame not received or incomplete. Bytes read: %d\n", bytesRead);
+    }
+
+
 
     // Restore the old port settings
     if (tcsetattr(fd, TCSANOW, &oldtio) == -1)
