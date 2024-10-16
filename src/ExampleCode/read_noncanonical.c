@@ -11,6 +11,8 @@
 #include <termios.h>
 #include <unistd.h>
 
+#include "../../include/bcc1_utils.h"
+
 // Baudrate settings are defined in <asm/termbits.h>, which is
 // included by <termios.h>
 #define BAUDRATE B38400
@@ -33,6 +35,9 @@
 
 #define SET 0x03 // SET frame: sent by the transmitter to initiate a connection
 #define UA 0x07 // UA frame: confirmation to the reception of a valid supervision frame
+
+
+#define FRAME_SIZE 5 //Size of SET and UA frames
 
 
 
@@ -84,7 +89,7 @@ int main(int argc, char *argv[])
     // Set input mode (non-canonical, no echo,...)
     newtio.c_lflag = 0;
     newtio.c_cc[VTIME] = 1; // Inter-character timer unused
-    newtio.c_cc[VMIN] = 5;  // Blocking read until 5 chars received
+    newtio.c_cc[VMIN] = 0;  // Blocking read until 5 chars received
 
     // VTIME e VMIN should be changed in order to protect with a
     // timeout the reception of the following character(s)
@@ -108,32 +113,80 @@ int main(int argc, char *argv[])
 
 
     //Creating BCC1
-    unsigned char BCC1_transmitter = A_TRANSMITTER ^ SET;
-    unsigned char BCC1_receiver = A_RECEIVER ^ UA ;
+    unsigned char BCC1_transmitter = calculate_bcc1(A_TRANSMITTER, SET);
+    unsigned char BCC1_receiver = calculate_bcc1(A_RECEIVER, UA) ;
 
 
+    unsigned char received[FRAME_SIZE];
+    int bytesRead = 0, totalBytesRead = 0;
 
+    while (totalBytesRead < FRAME_SIZE) {
+        bytesRead = read(fd, &received[totalBytesRead], FRAME_SIZE - totalBytesRead);
+        
+        if (bytesRead < 0) {
+            perror("Error reading from the serial port");
+            close(fd);
+            exit(-1);
+        } 
 
-    unsigned char buffer[BUF_SIZE];
-    while (1) {
-        int bytesRead = read(fd, buffer, sizeof(buffer));
-
-        // Check if enough bytes are read
-        for (int i = 0; i < bytesRead; i++) {
-            printf("Received: 0x%02X\n", buffer[i]);
-
-            // Check for the Set frame
-            if (buffer[i] == FLAG) {
-                if (i + 4 < bytesRead && buffer[i+1] == A_TRANSMITTER && buffer[i+2] == SET && buffer[i+3] == BCC1_transmitter) {
-                    // Create UA frame
-                    unsigned char uaFrame[] = {FLAG, A_RECEIVER, UA, BCC1_receiver, FLAG}; // BCC1 = 0x06
-                    write(fd, uaFrame, sizeof(uaFrame));
-                    printf("UA frame sent\n");
-                }
-            }
-        }
+        totalBytesRead += bytesRead;
     }
 
+    // validate the frame
+    if (received[0] == FLAG && received[1] == A_TRANSMITTER &&
+        received[2] == SET && received[3] == BCC1_transmitter && received[4] == FLAG) {
+        printf("Received correct SET frame\n");
+
+        // Send UA frame
+        unsigned char uaFrame[] = {FLAG, A_RECEIVER, UA, BCC1_receiver, FLAG};
+        int bytesWritten = write(fd, uaFrame, FRAME_SIZE);
+            if (bytesWritten < 0) {
+                perror("Error writing to the serial port");
+                close(fd);
+                exit(-1);
+            } else if (bytesWritten != FRAME_SIZE) {
+                fprintf(stderr, "Error: Only %d bytes written out of 5\n", bytesWritten);
+                close(fd);
+                exit(-1);
+            }
+
+
+    } else {
+        printf("Incorrect frame received\n");
+    }
+
+
+
+/*
+    unsigned char buffer[BUF_SIZE];
+    while (1) {
+        int bytesRead = read(fd, buffer, 5); // expect 5 bytes
+
+        if (bytesRead == 5) {
+            // frame validation
+            if (buffer[0] == FLAG && buffer[1] == A_TRANSMITTER && buffer[2] == SET && buffer[3] == BCC1_transmitter && buffer[4] == FLAG) {
+                printf("SET frame received correctly\n");
+
+                // Send UA frame
+                unsigned char uaFrame[] = {FLAG, A_RECEIVER, UA, BCC1_receiver, FLAG};
+                int bytesWritten = write(fd, uaFrame, sizeof(uaFrame));
+                    if (bytesWritten < 0) {
+                        perror("Error writing to the serial port");
+                        close(fd);
+                        exit(-1);
+                    } else if (bytesWritten != 5) {
+                        fprintf(stderr, "Error: Only %d bytes written out of 5\n", bytesWritten);
+                        close(fd);
+                        exit(-1);
+                    }
+            } else {
+                printf("Invalid frame received\n");
+            }
+        } else {
+            printf("Error: Incomplete frame received. Bytes read: %d\n", bytesRead);
+        }
+    }
+*/
 
 
 /*
