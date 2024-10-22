@@ -3,6 +3,9 @@
 #include "link_layer.h"
 #include "serial_port.h"
 #include "bcc1_utils.h"
+#include "alarm_utils.h"
+#include <signal.h>
+#include <stdlib.h>
 
 // MISC
 #define _POSIX_SOURCE 1 // POSIX compliant source
@@ -12,7 +15,7 @@
 #define CONTROL_SET 0x03
 #define CONTROL_UA 0x07
 
-// Variáveis globais para rastrear as estatísticas
+// Variáveis para as estatísticas
 int totalBytesSent = 0;
 int totalBytesReceived = 0;
 
@@ -29,7 +32,7 @@ int llopen(LinkLayer connectionParameters){
 ////////////////////////////////////////////////
 // LLWRITE
 ////////////////////////////////////////////////
-int llwrite(const unsigned char *buf, int bufSize){
+int llwrite(const unsigned char *buf, int bufSize) {
     unsigned char frame[5]; 
     frame[0] = FLAG;           
     frame[1] = ADDRESS_SENT_BY_SENDER;           
@@ -37,76 +40,132 @@ int llwrite(const unsigned char *buf, int bufSize){
     frame[3] = calculate_bcc1(frame[1], frame[2]); 
     frame[4] = FLAG;           
 
-    int bytes_written = writeBytesSerialPort(frame, 5);
-    if (bytes_written != 5){
-        printf("Erro ao enviar a trama SET!");
-        return -1;
+    setupAlarm(3);
+
+    while (!maxRetriesReached()) {
+        if (!alarmEnabled) {
+            int bytes_written = writeBytesSerialPort(frame, 5);
+            if (bytes_written != 5) {
+                printf("Erro ao enviar o frame SET!");
+                return -1;
+            }
+
+            totalBytesSent += bytes_written;
+            printf("Frame SET enviada com sucesso!");
+            activateAlarm(3);
+        }
+
+        unsigned char packet[5];
+        int result = llread(packet);
+        if (result >= 0) {
+            deactivateAlarm(); 
+            printf("Resposta UA recebida! Conexão estabelecida!");
+            return 0;
+        }
     }
 
-    // Atualizar as estatísticas de bytes enviados
-    totalBytesSent += bytes_written;
-
-    printf("Trama SET enviada, com sucesso!\n");
-    return bytes_written;
+    printf("Erro: Número máximo de retransmissões atingido!");
+    return -1;
 }
 
 ////////////////////////////////////////////////
 // LLREAD
 ////////////////////////////////////////////////
-int llread(unsigned char *packet){
-    unsigned char received_frame[5];
-    int bytes_read = 0;
+int llread(unsigned char *packet) {
     unsigned char byte;
+    enum { START, FLAG_RCV, A_RCV, C_RCV, BCC1_RCV, STOP } state = START;
 
-    // Ler 5 bytes (a trama SET), byte por byte usando readByteSerialPort
-    while (bytes_read < 5) {
+    unsigned char address, control, bcc1;
+    int bytes_read = 0;
+
+    setupAlarm(3);
+    activateAlarm(3);
+
+    while (state != STOP) {
         int result = readByteSerialPort(&byte);
         if (result < 0) {
             printf("Erro na leitura do byte da Porta Série!\n");
+            deactivateAlarm();
             return -1;
-        } else if (result == 0) {
-            // Timeout sem receber byte
+        } else if (result == 0) {  // Timeout sem receber byte
+            if (maxRetriesReached()) {
+                printf("Timeout: Número máximo de retransmissões atingido!\n");
+                deactivateAlarm();
+                return -1;
+            }
             continue;
-        } else {
-            // Sucesso na leitura de um byte
-            received_frame[bytes_read] = byte;
-            bytes_read++;
+        } else {  // Sucesso na leitura de um byte
+            switch (state) {
+                case START:
+                    if (byte == FLAG) {
+                        state = FLAG_RCV;
+                    }
+                    break;
+
+                case FLAG_RCV:
+                    if (byte == ADDRESS_SENT_BY_SENDER) {
+                        address = byte;
+                        state = A_RCV;
+                    } else if (byte != FLAG) {
+                        state = START;
+                    }
+                    break;
+
+                case A_RCV:
+                    if (byte == CONTROL_SET) {
+                        control = byte;
+                        state = C_RCV;
+                    } else if (byte == FLAG) {
+                        state = FLAG;
+                    } else {
+                        state = START;
+                    }
+                    break;
+
+                case C_RCV:
+                    bcc1 = calculate_bcc1(address, control);
+                    if (byte == bcc1) {
+                        state = BCC1_RCV;
+                    } else if (byte == FLAG) {
+                        state = FLAG;
+                    } else {
+                        printf("Erro: BCC1 inválido!\n");
+                        state = START;
+                    }
+                    break;
+
+                case BCC1_RCV:
+                    if (byte == FLAG) {
+                        state = STOP;  
+                    } else {
+                        state = START;
+                    }
+                    break;
+
+                default:
+                    break;
+            }
         }
     }
+    deactivateAlarm();
 
-    // Atualizar as estatísticas de bytes recebidos
-    totalBytesReceived += bytes_read;
+    unsigned char ua_frame[5];
+    ua_frame[0] = FLAG;           
+    ua_frame[1] = ADDRESS_SENT_BY_RECEIVER;           
+    ua_frame[2] = CONTROL_UA;           
+    ua_frame[3] = calculate_bcc1(ua_frame[1], ua_frame[2]); 
+    ua_frame[4] = FLAG;           
 
-    // Verificar FLAGs, Address, Control e BCC1
-    if (received_frame[0] == FLAG && received_frame[4] == FLAG &&
-        received_frame[1] == ADDRESS_SENT_BY_SENDER && received_frame[2] == CONTROL_SET &&
-        received_frame[3] == calculate_bcc1(received_frame[1], received_frame[2])){
-        
-        printf("Trama SET recebida e validada!\n");
-
-        // Responder com UA
-        unsigned char ua_frame[5];
-        ua_frame[0] = FLAG;           
-        ua_frame[1] = ADDRESS_SENT_BY_RECEIVER;           
-        ua_frame[2] = CONTROL_UA;           
-        ua_frame[3] = calculate_bcc1(ua_frame[1], ua_frame[2]); // BCC1
-        ua_frame[4] = FLAG;           
-
-        int ua_written = writeBytesSerialPort(ua_frame, 5);
-        if (ua_written != 5) {
-            printf("Erro ao enviar a trama UA!\n");
-            return -1;
-        }
-
-        // Atualizar as estatísticas de bytes enviados
-        totalBytesSent += ua_written;
-
-        printf("Trama UA enviada, com sucesso!\n");
-        return 0;
-    } else {
-        printf("Erro: Trama SET inválida!\n");
+    int ua_written = writeBytesSerialPort(ua_frame, 5);
+    if (ua_written != 5) {
+        printf("Erro ao enviar o frame UA!\n");
         return -1;
     }
+
+    totalBytesSent += ua_written;
+
+    printf("Frame UA enviada com sucesso!\n");
+    return 0;
 }
 
 ////////////////////////////////////////////////
@@ -114,10 +173,9 @@ int llread(unsigned char *packet){
 ////////////////////////////////////////////////
 int llclose(int showStatistics) {
     if (showStatistics) {
-        // Exibir as estatísticas de bytes enviados e recebidos
-        printf("Estatísticas:\n");
-        printf("Total de bytes enviados: %d\n", totalBytesSent);
-        printf("Total de bytes recebidos: %d\n", totalBytesReceived);
+        printf("\tEstatísticas:\n");
+        printf("Total de bytes enviados: %d;\n", totalBytesSent);
+        printf("Total de bytes recebidos: %d;\n", totalBytesReceived);
     }
 
     int clstat = closeSerialPort();
