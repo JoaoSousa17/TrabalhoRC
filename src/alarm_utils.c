@@ -2,13 +2,16 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include "alarm_utils.h"
 
 #define TRUE 1
 #define FALSE 0
 
+
 int alarmEnabled = FALSE;
 int alarmCount = 0;
 int maxRetransmissions = 3;
+
 
 // Alarm handler function
 void alarmHandler(int signal) {

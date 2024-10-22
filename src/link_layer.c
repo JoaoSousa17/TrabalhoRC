@@ -6,6 +6,7 @@
 #include "alarm_utils.h"
 #include <signal.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 // MISC
 #define _POSIX_SOURCE 1 // POSIX compliant source
@@ -40,7 +41,7 @@ int llwrite(const unsigned char *buf, int bufSize) {
     frame[3] = calculate_bcc1(frame[1], frame[2]); 
     frame[4] = FLAG;           
 
-    setupAlarm(3);
+    setupAlarm(30);
 
     while (!maxRetriesReached()) {
         if (!alarmEnabled) {
@@ -78,8 +79,8 @@ int llread(unsigned char *packet) {
     unsigned char address, control, bcc1;
     int bytes_read = 0;
 
-    setupAlarm(3);
-    activateAlarm(3);
+    setupAlarm(30);
+    activateAlarm(30);
 
     while (state != STOP) {
         int result = readByteSerialPort(&byte);
